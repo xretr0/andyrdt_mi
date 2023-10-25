@@ -1,54 +1,61 @@
 import torch
 
+from typing import List, Optional
+from tokenize_llama import tokenize_llama_chat, E_INST
+
 class SuffixManager:
-    def __init__(self, *, tokenizer, conv_template, instruction, target, adv_string):
+    def __init__(self, *, tokenizer, instruction, target, adv_suffix):
         self.tokenizer = tokenizer
-        self.conv_template = conv_template
         self.instruction = instruction
         self.target = target
-        self.adv_string = adv_string
+        self.adv_suffix = adv_suffix
     
-    def get_prompt(self, adv_string=None):
-        if adv_string is not None:
-            self.adv_string = adv_string
+    def set_adv_suffix(self, adv_suffix):
+        self.adv_suffix = adv_suffix
 
-        self.conv_template.append_message(self.conv_template.roles[0], f"{self.instruction} {self.adv_string}")
-        self.conv_template.append_message(self.conv_template.roles[1], f"{self.target}")
-        prompt = self.conv_template.get_prompt()
-        encoding = self.tokenizer(prompt, add_special_tokens=False)
-        toks = encoding.input_ids
+    def get_prompt(self):
+        toks = self.get_input_ids()
+        return self.tokenizer.decode(toks)
 
-        self.conv_template.messages = []
+    def get_input_ids(self):
+        toks = tokenize_llama_chat(
+            self.tokenizer,
+            conversation=[
+                (
+                    self.instruction + " " + self.adv_suffix,
+                    self.target
+                )
+            ],
+            no_final_eos=True,
+        )
 
-        self.conv_template.append_message(self.conv_template.roles[0], None)
-        toks = self.tokenizer(self.conv_template.get_prompt(), add_special_tokens=False).input_ids
-        self._start_token_slice = slice(0, 1)
-        self._user_role_slice = slice(self._start_token_slice.stop, len(toks)+1)
+        self._update_slices(toks)
 
-        self.conv_template.update_last_message(f"{self.instruction}")
-        toks = self.tokenizer(self.conv_template.get_prompt(), add_special_tokens=False).input_ids
-        self._goal_slice = slice(self._user_role_slice.stop, max(self._user_role_slice.stop, len(toks)))
+        return torch.tensor(toks)
 
-        self.conv_template.update_last_message(f"{self.instruction} {self.adv_string}")
-        toks = self.tokenizer(self.conv_template.get_prompt(), add_special_tokens=False).input_ids
-        self._control_slice = slice(self._goal_slice.stop, len(toks))
+    def _update_slices(self, toks):
+        self._assistant_role_slice = get_sub_toks_slice(
+           self.tokenizer.encode(E_INST, add_special_tokens=False),
+           toks,
+        )
+        self._control_slice = slice(
+            self._assistant_role_slice.start - len(self.tokenizer.encode(self.adv_suffix, add_special_tokens=False)),
+            self._assistant_role_slice.start
+        )
+        self._target_slice = slice(
+            self._assistant_role_slice.stop,
+            len(toks)
+        )
+        self._loss_slice = slice(
+            self._target_slice.start-1,
+            self._target_slice.stop-1
+        )
 
-        self.conv_template.append_message(self.conv_template.roles[1], None)
-        toks = self.tokenizer(self.conv_template.get_prompt(), add_special_tokens=False).input_ids
-        self._assistant_role_slice = slice(self._control_slice.stop, len(toks))
-
-        self.conv_template.update_last_message(f"{self.target}")
-        toks = self.tokenizer(self.conv_template.get_prompt(), add_special_tokens=False).input_ids
-        self._target_slice = slice(self._assistant_role_slice.stop, len(toks)-2)
-        self._loss_slice = slice(self._assistant_role_slice.stop-1, len(toks)-3)
-
-        self.conv_template.messages = []
-
-        return prompt
+def get_sub_toks_slice(sub_toks: List[int], toks: List[int]) -> Optional[slice]:
+    sub_len = len(sub_toks)
+    toks_len = len(toks)
     
-    def get_input_ids(self, adv_string=None):
-        prompt = self.get_prompt(adv_string=adv_string)
-        toks = self.tokenizer(prompt, add_special_tokens=False).input_ids
-        input_ids = torch.tensor(toks[:self._target_slice.stop])
-
-        return input_ids
+    for i in range(toks_len - sub_len + 1):
+        if toks[i:i+sub_len] == sub_toks:
+            return slice(i, i+sub_len)
+    return None
