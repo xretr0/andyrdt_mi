@@ -11,3 +11,5 @@ In each monthly challenge, the following are provided:
 The goal of each monthly challenge is to *understand* and *explain* how the model is performing the algorithmic task.
 
 I have found these challenges to be extremely fun, and a good way of practicing MI techniques.
+
+Note: the notebooks are best viewed (and run) in Colab, as the interactive `plotly` figures do not render in GitHub.
